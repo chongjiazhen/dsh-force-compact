@@ -83,7 +83,7 @@ REGION-PICK 诊断行新增 `boundaryKind=` 字段；加载标记升级为
 对"压缩"的处理**不是**扫描压缩标记，而是一个**影子价格索赔（shadow-price claim）协议**：
 `compaction/summary` / `compaction/prune` 事件本身 delta 恒 0，只把 `shadowedTokenCount`
 武装成一张待核销的索赔（claim，携带 `shadowedRange` 起止 + tokens）；紧随其后的 surface
-`replace`（`user/message` + `surfaceOp:{op:'replace',start,end}`）用
+`replace`（`user/message` + `surfaceOp:{op:'replace',startSeq,endSeq}`）用
 `delta = 检查点估价 − claim.tokens` 完成真正的扣减。**范围不匹配的 replace 会 THROW**；
 无索赔的 replace 按中性 0 delta 折入。生产者因此必须做到两点：
 ① summary 与 replace **同步相邻**追加（中间不得插入任何其他事件，否则索赔作废）；
@@ -126,10 +126,10 @@ CHARS_PER_TOKEN` 或 meter 估价版）保留不变，确保合规事务净 delt
 | 步骤 | 追加的事件 | 说明 |
 |------|-----------|------|
 | 打开锁 | `compaction/start` | `compactionId`（UUID），`turn`（当前 open turn 号或 null） |
-| 摘要生成 | — | 通过 `ctx.llm.stream` 流式生成，受 `maxSummaryTokens` 上限约束；**对齐官方 `compaction-basic`**：注入会话最新请求头中的 `system` 提示词 + `tools` 模式做前缀缓存对齐、三级 target 解析（configured→routed header→agent.options）、`purpose:'compaction'` 标签、完整 StreamChunk 装配（文本/推理/图像/用量）、终止 finish 分类（error/aborted/max-tokens/image 均按 fail-closed 抛错） |
+| 摘要生成 | — | 通过 `ctx.llm.stream` 流式生成，受 `maxSummaryTokens` 上限约束；**对齐官方 `compaction-basic`**：注入会话的 `system` 提示词（0.1.5 起取自表面节点 0 的 `system/message`，旧版取请求头 `system`；见 `summarizer.js` `headerPrefix`）+ 请求头 `tools` 模式做前缀缓存对齐、三级 target 解析（configured→routed header→agent.options）、`purpose:'compaction'` 标签、完整 StreamChunk 装配（文本/推理/图像/用量）、终止 finish 分类（error/aborted/max-tokens/image 均按 fail-closed 抛错） |
 | 收缩门禁 | — | `tokenMeter.estimateMessage` 判定摘要 tokens < 被遮蔽区间 tokens，否则中止 |
 | 提交摘要标记 | `compaction/summary` | 记录 `compactionId`、`shadowedRange`、`shadowedSeqs`、`shadowedTokenCount`、**必填** `provider`/`model`、实测 `maxTokens`/`usage`（摘要调用真正观察到的 LLM 封装，而非预调用启发式猜测） |
-| Surface 替换 | `user/message` + `surfaceOp:{op:'replace',start,end}` | 带规范的 compact 检查点 source `{kind:'plugin',plugin:'compact',compactionId}`；`sourceEventSeqs` 指向 start+summary+shadowed |
+| Surface 替换 | `user/message` + `surfaceOp:{op:'replace',startSeq,endSeq}` | 带规范的 compact 检查点 source `{kind:'plugin',plugin:'compact',compactionId}`；`sourceEventSeqs` 指向 start+summary+shadowed |
 | 闭合锁 | `compaction/end` | 同上 `compactionId`；失败路径在此带 `error:` 字段（可省略 summary） |
 
 **为什么内置引擎改用官方 `compaction/*` 词汇（而非此前的 `fc-compact/*` 前缀）：**
@@ -422,6 +422,16 @@ harness 在 0.1.2-rc.1 时代重构了 `Session` 类：**不再暴露公开的 `
 `hasSessionEventStore(session)` 供诊断读取做闸门。**新增任何读会话事件的代码一律
 用这两个 helper，禁止直接访问 `session.events`。**
 
+## 会话格式 V3 适配（harness 0.1.5，2026-09）
+
+0.1.3→0.1.5 把 `SESSION_FORMAT_VERSION` 从 2 升到 3，三处破坏性变更直接命中本插件的压缩事务：
+
+1. **`surfaceOp` 字段改名**：`{op:'replace',start,end}` → `{op:'replace',startSeq,endSeq}`，且会话核心按 `Object.keys(op).length === 3` 精确校验（`packages/core/session/src/surface.ts` `isReplaceOp`）。旧字段名会被 `session.append` 抛 `invalid replace surfaceOp`，事务在提交处失败。`builtin.js` 的 replace 追加已改用新字段名。
+2. **表面节点 0 是受保护的 `system/message`**：核心 `assertSystemHeadRewrite` 拒绝任何覆盖节点 0 的 `replace`（除非替换事件本身是恰好覆盖该节点的 `system/message`）。插件四个选区原先都从 `nodes[0]` 起，会被核心直接拒绝、压缩永远无法提交。`region.js` 现用 `dropSystemHead()` 把系统头从每个选区的节点数组里剔除（镜像官方 `compaction-basic` 的 `firstIdx = systemHead(...) ? 1 : 0`）。
+3. **`EpochHeader.system` 删除**：系统提示词不再随请求头携带，改由节点 0 的 `system/message` 承载。`summarizer.js` `headerPrefix()` 在请求头无 `system` 时从节点 0 派生文本，保持摘要调用的 KV 前缀对齐。
+
+回归验证：起 0.1.5 实例，跑一轮超过 `autoThresholdTokens` 的对话，确认 `compaction/summary` + `surfaceOp:replace` 提交成功、右下角 surfaceTokens 下降。
+
 ## 会话数据模型——本插件往什么里追加
 
 会话是 `SessionEvent` 的**事件溯源、仅追加日志**，是唯一事实来源。LLM 历史从不存储；它**派生**自该日志（`deriveMessages()`）。没有独立的"conversation"对象——轮次、步骤、消息、工具调用、压缩、todo、钩子都是同一日志里的行。（完整词汇与 payload 声明：上游 `docs/persistence-catalog` + `docs/subsystems/persistence`；本仓 `docs/context-management-analysis.md` 有浓缩分析。）
@@ -429,8 +439,8 @@ harness 在 0.1.2-rc.1 时代重构了 `Session` 类：**不再暴露公开的 `
 **事件信封**（每行）：`{ type, seq, time, data, ignorable?, sourceEventSeqs?, surfaceOp? }`。
 `seq` 在会话内单调连续（首事件 `seq=0`）。`ignorable` 缺省 = 必需：读到未知*必需*类型的读者必须拒绝重建，而不是静默丢弃。`sourceEventSeqs` / `surfaceOp` **只存在于 surface 事件**。
 
-**Surface 与 log-only。** 只有三种 `type` 是 *surface*——`user/message`、`assistant/message`、`tool/result`——它们是唯一产生 LLM 消息、进入 `deriveMessages()` 的类型，也是唯一允许携带 `surfaceOp` / `sourceEventSeqs` 的类型。其余 `type` 都是 *log-only*：持久且可回放，但从不进入派生历史（`turn/*`、`step/*`、`tool/call`、`compaction/*`、`todo/write`、`hook/*`、`approval/*`，……）。
+**Surface 与 log-only。** 0.1.5（V3）起有四种 `type` 是 *surface*——`system/message`、`user/message`、`assistant/message`、`tool/result`——它们是唯一产生 LLM 消息、进入 `deriveMessages()` 的类型，也是唯一允许携带 `surfaceOp` / `sourceEventSeqs` 的类型。其余 `type` 都是 *log-only*：持久且可回放，但从不进入派生历史（`turn/*`、`step/*`、`tool/call`、`compaction/*`、`todo/write`、`hook/*`、`approval/*`，……）。
 
-**落盘。** 每个事件一行 JSONL，默认包裹在拼接的带校验和 zstd 帧中（每个追加批次一帧）；SQLite 后端改存打包的 chunk 行。`SESSION_FORMAT_VERSION = 0`——预发布，无迁移；后端拒绝任何其它版本。崩溃恢复从不截断：未闭合的 `turn/start` 以合成 `turn/end { reason: { kind: 'interrupted' } }` 闭合。
+**落盘。** 每个事件一行 JSONL，默认包裹在拼接的带校验和 zstd 帧中（每个追加批次一帧）；SQLite 后端改存打包的 chunk 行。`SESSION_FORMAT_VERSION = 3`（0.1.5；0.1.3 为 2，V2→V3 迁移把系统提示词落成表面节点 0 的 `system/message`）；后端拒绝任何其它版本。崩溃恢复从不截断：未闭合的 `turn/start` 以合成 `turn/end { reason: { kind: 'interrupted' } }` 闭合。
 
-**dsh-force-compact 追加的内容**（其全部持久效果）：一组 log-only 的事务括号事件——官方路径是 `compaction/*`（如 `compaction/summary`，含 `shadowedRange` / `shadowedSeqs` / `shadowedTokenCount`），内置路径现在与官方共用同一套 `compaction/*` 词汇（字段形状完全一致，区别仅在 `compactionId` 来源：官方 backend 铸造 vs 内置 `mintCompactionId` 铸造）——它们不带 `surfaceOp`，因此自身从不进入模型历史；随后同步追加一个 **surface `user/message`**，携带 `surfaceOp: { op: 'replace', start, end }` 遮蔽被压缩区间——该 `replace` 才是真正的 surface 替换。两条路径的 `user/message` 均带 `source: { kind: 'plugin', plugin: 'compact', compactionId }`（规范 checkpoint marker，`isCompactCheckpointSource` 据此识别）便于追溯。推理/"思考"是**内容块类型**（`ContentBlock.type === 'reasoning'`），不是事件类型：它存在于 `assistant/message.content` 内（由 `reasoning-delta` 流块 / `reasoning-chunks` 行组装），UI 通过 `toAssistantBlock()` 把它渲染为可折叠区域。
+**dsh-force-compact 追加的内容**（其全部持久效果）：一组 log-only 的事务括号事件——官方路径是 `compaction/*`（如 `compaction/summary`，含 `shadowedRange` / `shadowedSeqs` / `shadowedTokenCount`），内置路径现在与官方共用同一套 `compaction/*` 词汇（字段形状完全一致，区别仅在 `compactionId` 来源：官方 backend 铸造 vs 内置 `mintCompactionId` 铸造）——它们不带 `surfaceOp`，因此自身从不进入模型历史；随后同步追加一个 **surface `user/message`**，携带 `surfaceOp: { op: 'replace', startSeq, endSeq }` 遮蔽被压缩区间——该 `replace` 才是真正的 surface 替换。两条路径的 `user/message` 均带 `source: { kind: 'plugin', plugin: 'compact', compactionId }`（规范 checkpoint marker，`isCompactCheckpointSource` 据此识别）便于追溯。推理/"思考"是**内容块类型**（`ContentBlock.type === 'reasoning'`），不是事件类型：它存在于 `assistant/message.content` 内（由 `reasoning-delta` 流块 / `reasoning-chunks` 行组装），UI 通过 `toAssistantBlock()` 把它渲染为可折叠区域。

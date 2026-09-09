@@ -13,6 +13,7 @@
  */
 
 import { guardFn } from '../core/crashnet.js'
+import { sessionEventAt } from '../core/session-events.js'
 
 /** Tag opening the structured summary block inside a landed checkpoint node.
  *  (The matching close tag is the symmetric `</compacted-summary>`; it is kept
@@ -624,17 +625,51 @@ export const summarize = guardFn('summarizer.summarize', __summarizeBody)
  */
 export function headerPrefix(session) {
   const result = {}
-  if (session === undefined || session === null || typeof session.requestHeader !== 'function') return result
+  if (session === undefined || session === null) return result
   let header
-  try {
-    header = session.requestHeader()
-  } catch {
-    return result
+  if (typeof session.requestHeader === 'function') {
+    try {
+      header = session.requestHeader()
+    } catch {
+      header = undefined
+    }
   }
-  if (header === undefined || header === null) return result
-  if (typeof header.system === 'string' && header.system.length > 0) result.system = header.system
-  if (Array.isArray(header.tools) && header.tools.length > 0) result.tools = [...header.tools]
+  if (header !== undefined && header !== null) {
+    if (typeof header.system === 'string' && header.system.length > 0) result.system = header.system
+    if (Array.isArray(header.tools) && header.tools.length > 0) result.tools = [...header.tools]
+  }
+  // Harness 0.1.5 (session format V3): the system prompt is no longer carried
+  // by `EpochHeader.system` — it lives in the `system/message` event at surface
+  // node 0. Derive it there when the header does not supply one, so the
+  // auxiliary summarization call still reproduces the routed request's verbatim
+  // system prefix (provider KV-cache alignment).
+  if (result.system === undefined) {
+    const derived = systemHeadText(session)
+    if (derived !== undefined) result.system = derived
+  }
   return result
+}
+
+/**
+ * The rendered system-prompt text held by surface node 0's `system/message`
+ * (harness 0.1.5 session format), or `undefined` when the surface has no
+ * system head or it projects no text. Never throws.
+ * @param {import('@deepseek-ai/dsh-agent').Session|undefined} session
+ * @returns {string|undefined}
+ */
+function systemHeadText(session) {
+  const surfaceNodes = (session && session.surface && Array.isArray(session.surface.nodes)) ? session.surface.nodes : []
+  if (surfaceNodes.length === 0) return undefined
+  const head = sessionEventAt(session, surfaceNodes[0])
+  if (head === null || typeof head !== 'object' || head.type !== 'system/message') return undefined
+  const data = (head.data && typeof head.data === 'object') ? head.data : {}
+  const message = (data.message && typeof data.message === 'object') ? data.message : {}
+  const content = Array.isArray(message.content) ? message.content : []
+  let text = ''
+  for (const block of content) {
+    if (block && typeof block === 'object' && typeof block.text === 'string') text += block.text
+  }
+  return text.length > 0 ? text : undefined
 }
 
 /**

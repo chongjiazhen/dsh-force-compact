@@ -11,11 +11,49 @@
  */
 
 import { guardFn } from '../core/crashnet.js'
-import { sessionEvents } from '../core/session-events.js'
+import { sessionEvents, sessionEventAt } from '../core/session-events.js'
 import {
   toolPairingBalancedAfterSafe,
   toolPairingBalancedBeforeSafe,
 } from '../core/pairing.js'
+
+/**
+ * Number of leading surface nodes every compactable region must exclude: `1`
+ * when surface node 0 is the `system/message` carrying the system prompt
+ * (harness session format V3, 0.1.5), else `0`.
+ *
+ * The session core protects node 0 — a `replace` spanning it is rejected
+ * unless the replacing event is itself a `system/message` over exactly that
+ * node (`packages/core/session/src/surface.ts` `assertSystemHeadRewrite`), and
+ * the official `compaction-basic` selection mirrors this by starting at
+ * `firstIdx = systemHead(...) ? 1 : 0`. Every selector here drops the head
+ * before applying its head-anchored policy, so a returned span never covers
+ * node 0 and the delegated `compactRegion` / builtin `replace` append commits.
+ * @param {import('@deepseek-ai/dsh-session').Session} session
+ * @returns {number} 1 or 0.
+ */
+function systemHeadCount(session) {
+  const surfaceNodes = (session && session.surface && Array.isArray(session.surface.nodes)) ? session.surface.nodes : []
+  if (surfaceNodes.length === 0) return 0
+  const head = sessionEventAt(session, surfaceNodes[0])
+  return (head !== null && typeof head === 'object' && head.type === 'system/message') ? 1 : 0
+}
+
+/**
+ * Drop the protected system head from an ordered surface / per-node price
+ * array. Falls back to the input unchanged when the array does not mirror the
+ * current surface (length mismatch), so an inconsistent meter snapshot is
+ * never silently shifted.
+ * @param {import('@deepseek-ai/dsh-session').Session} session
+ * @param {readonly any[]} arr
+ * @returns {readonly any[]}
+ */
+function dropSystemHead(session, arr) {
+  const firstIdx = systemHeadCount(session)
+  if (firstIdx === 0) return arr
+  const surfaceNodes = (session && session.surface && Array.isArray(session.surface.nodes)) ? session.surface.nodes : []
+  return arr.length === surfaceNodes.length ? arr.slice(firstIdx) : arr
+}
 
 /**
  * Select the compactable region for a session.
@@ -27,7 +65,8 @@ import {
 function __selectRegionBody(session, config) {
   // A malformed surface (missing `session.surface` / non-array `nodes`) yields
   // nothing to compact — return null rather than throw.
-  const nodes = (session && session.surface && Array.isArray(session.surface.nodes)) ? session.surface.nodes : []
+  const surfaceNodes = (session && session.surface && Array.isArray(session.surface.nodes)) ? session.surface.nodes : []
+  const nodes = dropSystemHead(session, surfaceNodes)
   const total = nodes.length
   if (total < config.minNodes) return null
 
@@ -222,9 +261,10 @@ export const validateSurfaceRegionSafe = ((session, start, end) => {
 // Internal body of `selectEarliestByMeasurements` — routed through the
 // crash-net wrapper.
 function __selectEarliestByMeasurementsBody(session, ratio, measurement, maxRegionNodes) {
-  const nodes = (measurement && Array.isArray(measurement.nodes) && measurement.nodes.length > 0)
+  const pricedNodes = (measurement && Array.isArray(measurement.nodes) && measurement.nodes.length > 0)
     ? measurement.nodes
     : []
+  const nodes = dropSystemHead(session, pricedNodes)
   const total = nodes.length
   if (total < 2) return null
   const clampedRatio = Number.isFinite(ratio) ? Math.min(Math.max(ratio, 0.01), 1) : 0.5
@@ -342,9 +382,10 @@ function __selectEarliestByMeasurementsBody(session, ratio, measurement, maxRegi
 // Internal body of `selectRetainingLatestTokens` — routed through the
 // crash-net wrapper.
 function __selectRetainingLatestTokensBody(session, retainLatestTokens, measurement) {
-  const nodes = (measurement && Array.isArray(measurement.nodes) && measurement.nodes.length > 0)
+  const pricedNodes = (measurement && Array.isArray(measurement.nodes) && measurement.nodes.length > 0)
     ? measurement.nodes
     : []
+  const nodes = dropSystemHead(session, pricedNodes)
   const total = nodes.length
   if (total < 2) return null
   const budget = (Number.isFinite(retainLatestTokens) && retainLatestTokens > 0)
@@ -497,7 +538,8 @@ function __selectRetainingLatestTokensBody(session, retainLatestTokens, measurem
 function __selectEarliestByTokensBody(session, totalTokens, maxRegionNodes) {
   // A malformed surface yields nothing to compact — return null rather than
   // throwing on a missing `session.surface.nodes`.
-  const nodes = (session && session.surface && Array.isArray(session.surface.nodes)) ? session.surface.nodes : []
+  const surfaceNodes = (session && session.surface && Array.isArray(session.surface.nodes)) ? session.surface.nodes : []
+  const nodes = dropSystemHead(session, surfaceNodes)
   const total = nodes.length
   if (total < 2) return null
   const budget = (typeof totalTokens === 'number' && Number.isFinite(totalTokens) && totalTokens > 0)

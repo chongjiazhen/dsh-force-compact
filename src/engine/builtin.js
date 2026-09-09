@@ -895,7 +895,7 @@ async function runTransaction(ctx, agent, session, region, signal, settings, sou
       content: checkpointContent,
       source: Object.freeze(checkpointSourceData),
     }, {
-      surfaceOp: { op: 'replace', start: targetRange.start, end: targetRange.end },
+      surfaceOp: { op: 'replace', startSeq: targetRange.start, endSeq: targetRange.end },
       sourceEventSeqs: [startEvent.seq, summaryEvent.seq, ...shadowedSeqs],
     })
   } catch (error) {
