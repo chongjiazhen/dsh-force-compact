@@ -19,12 +19,12 @@
  * @module @falling-ts/dsh-force-compact/turn-end
  */
 
-import { readSettings, DEFAULTS } from '../core/settings.js'
+import { readSettings, DEFAULTS, resolveAutoThreshold } from '../core/settings.js'
 import { resolveCompaction } from '../engine/backend.js'
 import { publishCompressing, publishDone, publishEnd } from '../core/ui-signal.js'
 import { guardFn, renderCrash, captureThrowSite, appendCrashLine as appendDiag } from '../core/crashnet.js'
 
-import { getProjectedTokens } from '../core/projected.js'
+import { getProjectedTokens, getContextWindow } from '../core/projected.js'
 import { MAX_COMPACTION_ROUNDS } from '../core/policy.js'
 
 /**
@@ -127,6 +127,7 @@ async function __handleAgentStatusBody(ctx, payload, mode) {
     //      cap: small-span skip, replay ceiling, failure cooldown), or
     //  (c) the hard `MAX_COMPACTION_ROUNDS` ceiling is reached.
     const meter = ctx.get('tokenMeter')
+    const idleThreshold = resolveAutoThreshold(settings, getContextWindow(ctx, session))
     let committedAny = false
     for (let round = 0; round < MAX_COMPACTION_ROUNDS; round += 1) {
       if (round > 0) {
@@ -139,9 +140,9 @@ async function __handleAgentStatusBody(ctx, payload, mode) {
             effTotal = undefined
           }
         }
-        if (typeof effTotal === 'number' && Number.isFinite(effTotal) && effTotal < settings.autoThresholdTokens) {
+        if (typeof effTotal === 'number' && Number.isFinite(effTotal) && effTotal < idleThreshold) {
           ctx.logger.info(
-            `[force-compact] ${session.id}: idle loop compaction — after ${round + 1} round(s) the projected context ~${effTotal} tokens is below threshold ${settings.autoThresholdTokens}; target reached`
+            `[force-compact] ${session.id}: idle loop compaction — after ${round + 1} round(s) the projected context ~${effTotal} tokens is below threshold ${idleThreshold}; target reached`
           )
           break
         }

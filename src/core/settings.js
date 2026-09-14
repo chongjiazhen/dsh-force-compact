@@ -149,6 +149,7 @@ export const MIN_TOKEN_SCALES = Object.freeze({
 export const DEFAULTS = Object.freeze({
   disableThinking: true,
   autoThresholdTokens: 32000,
+  autoThresholdPercent: 0,
   // Absolute TOKEN COUNT retained at the LATEST end of the surface when an
   // auto / forced compaction fires. Starting from the newest surface node and
   // walking backward, node tokens (from the official `tokenMeter` per-node
@@ -240,6 +241,8 @@ async function __readSettingsBody(ctx) {
   }
   const disableThinking = asBool('disableThinking', DEFAULTS.disableThinking)
   const autoThresholdTokens = asScaled('autoThresholdTokens', MIN_TOKEN_SCALES.autoThresholdTokens)
+  const rawPercent = Number.isFinite(section.autoThresholdPercent) ? section.autoThresholdPercent : DEFAULTS.autoThresholdPercent
+  const autoThresholdPercent = Math.max(0, Math.min(100, rawPercent))
   const retainLatestTokens = asScaled('retainLatestTokens', MIN_TOKEN_SCALES.retainLatestTokens)
   const turnEndForceCompactionEnabled = asBool('turnEndForceCompactionEnabled', DEFAULTS.turnEndForceCompactionEnabled)
   const debug = asBool('debug', DEFAULTS.debug)
@@ -257,6 +260,7 @@ async function __readSettingsBody(ctx) {
   return {
     disableThinking,
     autoThresholdTokens,
+    autoThresholdPercent,
     retainLatestTokens,
     turnEndForceCompactionEnabled,
     debug,
@@ -265,6 +269,30 @@ async function __readSettingsBody(ctx) {
     builtinEnabled,
     maxSummaryTokens,
   }
+}
+
+/**
+ * Resolve the effective automatic compaction threshold in tokens.
+ *
+ * When `autoThresholdPercent` is set (> 0), computes the threshold as a
+ * fraction of the active model's `contextWindow`. Falls back to the absolute
+ * `autoThresholdTokens` when the percent is unset/zero or when the context
+ * window is unavailable (no usage sample yet, registry absent, etc.).
+ *
+ * Callers pass the `contextWindow` reading (from {@link getContextWindow} in
+ * `projected.js`) so this module stays import-free.
+ *
+ * @param {object} settings resolved settings from {@link readSettings}.
+ * @param {number|undefined} contextWindow the active model's context window
+ *   in tokens, or `undefined` when unavailable.
+ * @returns {number} the effective threshold in tokens.
+ */
+export function resolveAutoThreshold(settings, contextWindow) {
+  const pct = settings && settings.autoThresholdPercent
+  if (typeof pct === 'number' && pct > 0 && typeof contextWindow === 'number' && contextWindow > 0) {
+    return Math.floor(contextWindow * pct / 100)
+  }
+  return settings.autoThresholdTokens
 }
 
 /**
@@ -397,6 +425,7 @@ export async function buildSchema() {
       // the form refuses to persist a sub-floor draft. Documented trade-off:
       // the schema is descriptive here; the floor is behavioral.
       autoThresholdTokens: z.number().default(DEFAULTS.autoThresholdTokens),
+      autoThresholdPercent: z.number().default(DEFAULTS.autoThresholdPercent),
       // ABSOLUTE TOKEN COUNT retained at the latest end of the surface when an
       // auto / forced compaction fires (see the `DEFAULTS` comment for the full
       // semantics). `step(1)` constrains to whole tokens (schemastery has no

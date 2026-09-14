@@ -15,8 +15,8 @@
 
 import { queueForceCompact } from './guard.js'
 import { resolveCompaction } from '../engine/backend.js'
-import { readSettings, readRawSetting, DEFAULTS } from '../core/settings.js'
-import { getProjectedTokens } from '../core/projected.js'
+import { readSettings, readRawSetting, DEFAULTS, resolveAutoThreshold } from '../core/settings.js'
+import { getProjectedTokens, getContextWindow } from '../core/projected.js'
 import { MAX_COMPACTION_ROUNDS } from '../core/policy.js'
 import { publishCompressing, publishDone } from '../core/ui-signal.js'
 import { guardFn, renderCrash, captureThrowSite, appendCrashLine as appendDiag } from '../core/crashnet.js'
@@ -117,6 +117,7 @@ async function __forceCompactCommandBody(ctx, invocation) {
       // compactable range / a physical cap).
       try {
         const meter = ctx.get('tokenMeter')
+        const cmdThreshold = resolveAutoThreshold(settings, getContextWindow(ctx, session))
         let committedAny = false
         let lastResult = null
         for (let round = 0; round < MAX_COMPACTION_ROUNDS; round += 1) {
@@ -130,9 +131,9 @@ async function __forceCompactCommandBody(ctx, invocation) {
                 effTotal = undefined
               }
             }
-            if (typeof effTotal === 'number' && Number.isFinite(effTotal) && effTotal < settings.autoThresholdTokens) {
+            if (typeof effTotal === 'number' && Number.isFinite(effTotal) && effTotal < cmdThreshold) {
               ctx.logger.info(
-                `[force-compact] ${session.id}: /force-compact loop — after ${round + 1} round(s) the projected context ~${effTotal} tokens is below threshold ${settings.autoThresholdTokens}; target reached`
+                `[force-compact] ${session.id}: /force-compact loop — after ${round + 1} round(s) the projected context ~${effTotal} tokens is below threshold ${cmdThreshold}; target reached`
               )
               break
             }

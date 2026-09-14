@@ -101,6 +101,37 @@ export function getProjectedTokens(ctx, session) {
 }
 
 /**
+ * Read the active model's `contextWindow` (total capacity in tokens) for one
+ * session - the denominator when computing a percentage-based compaction
+ * threshold.
+ *
+ * Same fail-open contract as {@link getProjectedTokens}: every
+ * absence/degradation resolves to `undefined` rather than propagating.
+ *
+ * @param {object} ctx cordis context (Host listener `this` / apply ctx).
+ * @param {object|undefined} session live session handle.
+ * @returns {number|undefined} the `contextWindow` reading, or `undefined`
+ *   when the registry is unavailable, the unit is not folded, or no provider
+ *   has reported a context window yet.
+ */
+export function getContextWindow(ctx, session) {
+  try {
+    if (typeof ctx?.get !== 'function') return undefined
+    const registry = ctx.get('sessionProjections')
+    if (registry === undefined || registry === null) return undefined
+    if (typeof registry.snapshot !== 'function') return undefined
+    if (session === undefined || session === null) return undefined
+    const snap = registry.snapshot(session)
+    const cp = snap && snap.values && snap.values.contextPressure
+    if (cp === undefined || cp === null) return undefined
+    const cw = cp.contextWindow
+    return (typeof cw === 'number' && Number.isFinite(cw) && cw > 0) ? cw : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Classify WHY {@link getProjectedTokens} resolved to `undefined` for one
  * session — a DIAGNOSTIC aid that reproduces the same read but labels the exact
  * failure tier, so an operator can tell apart "registry/service not reachable

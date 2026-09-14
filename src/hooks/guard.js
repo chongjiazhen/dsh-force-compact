@@ -30,7 +30,7 @@
  * @module @falling-ts/dsh-force-compact/request-guard
  */
 
-import { readSettings, DEFAULTS, NS } from '../core/settings.js'
+import { readSettings, DEFAULTS, NS, resolveAutoThreshold } from '../core/settings.js'
 import { MAX_COMPACTION_ROUNDS } from '../core/policy.js'
 import {
   selectEarliestByTokens,
@@ -42,7 +42,7 @@ import { resolveCompaction } from '../engine/backend.js'
 import { publishCompressing, publishDone, publishUiStatus, randomWorkingPair, PHASE_COMPRESSING, LIVE_UI_FIELD } from '../core/ui-signal.js'
 import { isCompactionActive } from '../engine/builtin.js'
 import { guardFn, renderCrash, captureThrowSite, appendCrashLine as appendDiag } from '../core/crashnet.js'
-import { getProjectedTokens } from '../core/projected.js'
+import { getProjectedTokens, getContextWindow } from '../core/projected.js'
 import { sessionEvents } from '../core/session-events.js'
 
 /**
@@ -157,6 +157,7 @@ async function __compactRetainingLatestBody(ctx, agent, signal, mode, sourceComm
   const settings = (await readSettings(ctx)) ?? DEFAULTS
   const session = agent.session
   if (session === undefined || session === null) return false
+  const loopThreshold = resolveAutoThreshold(settings, getContextWindow(ctx, session))
   // Locate a usable compaction backend: the OFFICIAL `compaction` service
   // (preferred when reachable) OR this plugin's OWN builtin engine (the
   // fallback when the service is realm-isolated away — e.g. standard preset).
@@ -230,9 +231,9 @@ async function __compactRetainingLatestBody(ctx, agent, signal, mode, sourceComm
     // TARGET REACHED — stop looping once the projection is back below the
     // threshold (from the SECOND round onward; the first round always tries a
     // compaction so an explicit `/force-compact` still runs below the gate).
-    if (round > 0 && typeof totalTokens === 'number' && Number.isFinite(totalTokens) && totalTokens < settings.autoThresholdTokens) {
+    if (round > 0 && typeof totalTokens === 'number' && Number.isFinite(totalTokens) && totalTokens < loopThreshold) {
       ctx.logger.info(
-        `[force-compact] ${session.id}: loop compaction — after ${round + 1} round(s) the projected context ~${totalTokens} tokens is below threshold ${settings.autoThresholdTokens}; target reached`
+        `[force-compact] ${session.id}: loop compaction — after ${round + 1} round(s) the projected context ~${totalTokens} tokens is below threshold ${loopThreshold}; target reached`
       )
       break
     }
@@ -507,13 +508,14 @@ async function __forceCompactIfNeededBody(ctx, agent, signal, mode) {
       measurement = undefined
     }
   }
+  const effectiveThreshold = resolveAutoThreshold(settings, getContextWindow(ctx, session))
   // DIAGNOSTIC: log every facet on the threshold branch so a divergent total
   // can be attributed (projection basis vs baseline kind/tokens vs surface sum
   // vs nodes-window sum). Threshold hits are rare events, so unconditional
   // DEBUG here is cheap.
   const diagNodes = (measurement && Array.isArray(measurement.nodes)) ? measurement.nodes : []
   const diagWindowSum = diagNodes.reduce((acc, n) => acc + (Number(n && n.tokens) > 0 ? Number(n.tokens) : 0), 0)
-  if (total >= settings.autoThresholdTokens) {
+  if (total >= effectiveThreshold) {
     const baseline = (measurement && measurement.baseline) || undefined
     const estFallback = estimateSessionTokens(session)
     ctx.logger.debug(
@@ -524,8 +526,8 @@ async function __forceCompactIfNeededBody(ctx, agent, signal, mode) {
       + `nodes=${diagNodes.length} windowSum=${diagWindowSum} charEst4=${estFallback}`
     )
   }
-  if (total < settings.autoThresholdTokens) {
-    ctx.logger.debug(`[force-compact] ${session.id}: total ~${total} tokens < threshold ${settings.autoThresholdTokens} — below gate, letting the request proceed`)
+  if (total < effectiveThreshold) {
+    ctx.logger.debug(`[force-compact] ${session.id}: total ~${total} tokens < threshold ${effectiveThreshold} — below gate, letting the request proceed`)
     return false
   }
 
@@ -551,14 +553,14 @@ async function __forceCompactIfNeededBody(ctx, agent, signal, mode) {
   const windowSumObserved = floorWindow.reduce((acc, n) => acc + Number(n.tokens), 0)
   const maxRemovableObserved = Math.max(0, windowSumObserved - settings.retainLatestTokens)
   const projectedAfterObserved = total - maxRemovableObserved
-  if (floorWindow.length > 0 && projectedAfterObserved >= settings.autoThresholdTokens) {
+  if (floorWindow.length > 0 && projectedAfterObserved >= effectiveThreshold) {
     ctx.logger.debug(
       `[force-compact] ${session.id}: PRE-FLIGHT OBSERVATION — total ${total} `
       + `(diagnostic baseline ${measurement && measurement.baseline ? `${measurement.baseline?.kind}:${measurement.baseline?.tokens}` : 'n/a'} `
       + `+ diagnostic surfaceDelta ${(measurement && measurement.surfaceDeltaTokens != null) ? measurement.surfaceDeltaTokens : '?'}); `
       + `surfaces window = ${windowSumObserved} tokens across ${floorWindow.length} nodes, `
       + `retains ~${settings.retainLatestTokens} → max removable head = ${maxRemovableObserved} tokens; `
-      + `naive projected-after ${projectedAfterObserved} is >= threshold ${settings.autoThresholdTokens} `
+      + `naive projected-after ${projectedAfterObserved} is >= threshold ${effectiveThreshold} `
       + `BUT the baseline is provider-reported usage (resets post-compaction), `
       + `so we PROCEED with the compaction attempt regardless. The downstream `
       + `shrink-gate protects against repeat no-ops (no BLANK cooldown anymore).`
@@ -573,7 +575,7 @@ async function __forceCompactIfNeededBody(ctx, agent, signal, mode) {
   // proceed without pretending to compact.
   if (windowSumObserved > 0 && Number.isFinite(windowSumObserved) && windowSumObserved <= settings.retainLatestTokens) {
     ctx.logger.debug(
-      `[force-compact] ${session.id}: threshold ${settings.autoThresholdTokens} tripped on a surface window (~${Math.round(windowSumObserved)} tokens) that does not exceed retainLatestTokens (~${settings.retainLatestTokens}) — nothing above the retention floor to compact; letting the request proceed`,
+      `[force-compact] ${session.id}: threshold ${effectiveThreshold} tripped on a surface window (~${Math.round(windowSumObserved)} tokens) that does not exceed retainLatestTokens (~${settings.retainLatestTokens}) — nothing above the retention floor to compact; letting the request proceed`,
     )
     return false
   }
@@ -581,7 +583,7 @@ async function __forceCompactIfNeededBody(ctx, agent, signal, mode) {
   // At or above the threshold: attempt a retained-tail compaction (the request
   // itself always proceeds; the plugin never rejects the model call).
   ctx.logger.debug(
-    `[force-compact] ${session.id}: context ~${total} tokens >= threshold ${settings.autoThresholdTokens} — attempting a retained-tail compaction (success/failure is reported by the backend below; the request itself proceeds regardless)`,
+    `[force-compact] ${session.id}: context ~${total} tokens >= threshold ${effectiveThreshold} — attempting a retained-tail compaction (success/failure is reported by the backend below; the request itself proceeds regardless)`,
   )
   // NOTE: threshold path has NO originating slash-command, so the 5th argument
   // (sourceCommandId) must be omitted — passing something else here (e.g. the

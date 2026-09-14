@@ -15,9 +15,9 @@
 
 import { resolveConfig } from '../core/policy.js'
 import { selectRegion } from './region.js'
-import { readSettings, DEFAULTS } from '../core/settings.js'
+import { readSettings, DEFAULTS, resolveAutoThreshold } from '../core/settings.js'
 import { resolveCompaction } from './backend.js'
-import { getProjectedTokens, diagnoseProjectedTokensAbsence } from '../core/projected.js'
+import { getProjectedTokens, getContextWindow, diagnoseProjectedTokensAbsence } from '../core/projected.js'
 import { guardFn, renderCrash, captureThrowSite, appendCrashLine as appendDiag } from '../core/crashnet.js'
 import { sessionEvents } from '../core/session-events.js'
 
@@ -111,9 +111,10 @@ async function __compactSessionBody(ctx, agent, controller, mode) {
   const basisLabel = gateUsesProjectedList
     ? 'projectedTokens (corner-identical)'
     : `char-estimate (projectedTokens absent: ${diagnoseProjectedTokensAbsence(ctx, session)})`
-  ctx.logger.debug(`[force-compact] ${session.id}: session/flush checkpoint fired — session ~${sessionTokens} tokens via ${basisLabel}${reconciliationFacet} (threshold ${settings.autoThresholdTokens})`)
-  if (sessionTokens < settings.autoThresholdTokens) {
-    ctx.logger.debug(`[force-compact] ${session.id}: context ~${sessionTokens} tokens below threshold ${settings.autoThresholdTokens}; skipping`)
+  const effectiveThreshold = resolveAutoThreshold(settings, getContextWindow(ctx, session))
+  ctx.logger.debug(`[force-compact] ${session.id}: session/flush checkpoint fired — session ~${sessionTokens} tokens via ${basisLabel}${reconciliationFacet} (threshold ${effectiveThreshold}${settings.autoThresholdPercent > 0 ? ` [${settings.autoThresholdPercent}% of contextWindow]` : ''})`)
+  if (sessionTokens < effectiveThreshold) {
+    ctx.logger.debug(`[force-compact] ${session.id}: context ~${sessionTokens} tokens below threshold ${effectiveThreshold}; skipping`)
     return null
   }
 
