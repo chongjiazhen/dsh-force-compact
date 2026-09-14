@@ -93,7 +93,7 @@ window.__ModuleLoader__.load({
     };
 
     /** 必需服务（cordis fiber inject）。settingsScope 由 ui-settings 提供。 */
-    const inject = ["slots", "locale", "settingsScope"];
+    const inject = ["slots", "locale", "settingsScope", "remote", "remote.settings"];
 
     // ── 视觉设计 ----------------------------------------------------------------
     // 参照通用设置分区（如「语言」）的排版：扁平、无背景色、行间细分隔线、
@@ -802,18 +802,70 @@ window.__ModuleLoader__.load({
       // 客户端 settingsScope 背后共享的 SettingsDescribeMirror 会收到 settings/
       // document-updated 广播并重新 mirror.load()，随后 derive() 读到 status='ready'
       // 自动渲染出对齐好的表单——无需本分区额外维护 timer 或轮询。
-      const unsub = scope.subscribe(derive);
-      derive();
-      // unsub 本身就是一个 disposer（解绑 scope 监听器）。必须把它作为 effect 的
-      // 返回值交给 ctx.effect，由 fiber 在本插件卸载/重跑时运行它以解除订阅；
-      // 直接把 unsub 当作用法的“执行体”（ctx.effect(unsub,...)）会令 fiber 立即
-      // 调用 unsub() 并把它的 void 返回值当第二个 effect 收集——既提前解绑了本次
-      // 订阅，又不登记任何清理项，属错误用法。
-      ctx.effect(() => unsub, "force-compact: scope subscription");
+      let update;
+      if (ctx.remote.$host.isLoopback) {
+        const unsub = scope.subscribe(derive);
+        derive();
+        // unsub 本身就是一个 disposer（解绑 scope 监听器）。必须把它作为 effect 的
+        // 返回值交给 ctx.effect，由 fiber 在本插件卸载/重跑时运行它以解除订阅；
+        // 直接把 unsub 当作用法的“执行体”（ctx.effect(unsub,...)）会令 fiber 立即
+        // 调用 unsub() 并把它的 void 返回值当第二个 effect 收集——既提前解绑了本次
+        // 订阅，又不登记任何清理项，属错误用法。
+        ctx.effect(() => unsub, "force-compact: scope subscription");
+        update = (field, value2) => scope.set(field, value2);
+      } else {
+        // Non-loopback page (LAN / Tailscale hostname): dsh-client-ui-settings
+        // pins every settingsScope to memory mode, which is born 'unavailable'
+        // and never subscribes to the describe mirror. Read and write the
+        // namespace over ctx.remote.settings directly, as the built-in Models
+        // section does, so the panel still renders and persists.
+        let revision;
+        const applyView = (row, writable) => {
+          revision = row.revision;
+          store.update((d) => {
+            d.status = "ready";
+            d.value = row.value;
+            d.writable = writable;
+          });
+          const liveUi = (row.value && typeof row.value === "object") ? row.value.liveUi : undefined;
+          if (liveUi && typeof liveUi === "object") paintTurnStatus(liveUi);
+        };
+        const load = async () => {
+          try {
+            const r = await ctx.remote.settings.describe();
+            if (!r.ok) { store.update((d) => { d.status = "unavailable"; }); return; }
+            const row = r.value.namespaces.find((n) => n.ns === NS_SETTINGS);
+            if (row === undefined) {
+              store.update((d) => { d.status = "unavailable"; d.writable = r.value.writable; });
+              return;
+            }
+            applyView(row, r.value.writable);
+          } catch {
+            // keep the previous snapshot
+          }
+        };
+        ctx.effect(() => {
+          const off = ctx.remote.$on("settings/document-updated", () => { load(); });
+          load();
+          return off;
+        }, "force-compact: remote settings mirror");
+        update = async (field, value2) => {
+          const ops = value2 === undefined
+            ? [{ op: "unset", path: [field] }]
+            : [{ op: "set", path: [field], value: value2 }];
+          try {
+            const r = await ctx.remote.settings.mutate(NS_SETTINGS, ops, revision);
+            if (r.ok) applyView(r.value, store.getSnapshot().writable);
+            else await load();
+          } catch {
+            await load();
+          }
+        };
+      }
       const injected = () => ({
         hooks: { forceCompact: store },
         t: t,
-        update: (field, value2) => scope.set(field, value2),
+        update: (field, value2) => update(field, value2),
       });
       ctx.slots.inject("settings.section", () => ctx.slots.register({
         name: "settings.section",
