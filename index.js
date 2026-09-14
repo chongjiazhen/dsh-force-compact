@@ -193,15 +193,6 @@ const __applyInner = (ctx) => {
       if (ok) {
         settingsState.installed = true
         ctx.logger.info('[force-compact] registered settings namespace "falling-ts-force-compact"')
-        // Kick the client-side SettingsDescribeMirror: settings.register()
-        // alone does not emit settings/document-updated, so the client panel
-        // stays on 'unavailable' until a data write triggers the broadcast.
-        // A no-op update (empty patch) is enough to wake the mirror.
-        try {
-          if (typeof settings.update === 'function') {
-            await settings.update('falling-ts-force-compact', {})
-          }
-        } catch { /* cosmetic - must not fail registration */ }
       } else {
         // `settings` exists but `buildSchema()` failed (typically the
         // schemastery bare-module import could not resolve in this loader).
