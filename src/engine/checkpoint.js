@@ -68,6 +68,11 @@ async function __compactSessionBody(ctx, agent, controller, mode) {
   // service is not mounted.
   const settings = (await readSettings(ctx)) ?? DEFAULTS
 
+  if (settings.enabled === false) {
+    ctx.logger.debug(`[force-compact] ${session.id}: plugin disabled - checkpoint skipped`)
+    return null
+  }
+
   // Automatic compaction trigger gate: only compact when the session's context
   // occupancy reaches the configured threshold. Below it, the checkpoint is
   // skipped so short sessions are never force-compacted.

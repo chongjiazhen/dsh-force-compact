@@ -88,6 +88,9 @@ async function __forceCompactCommandBody(ctx, invocation) {
   // the resolver need not re-read settings.
   const mode = await readRawSetting(ctx, 'compactionMode')
   const settings = (await readSettings(ctx)) ?? DEFAULTS
+  if (settings.enabled === false) {
+    return { kind: 'error', text: 'force-compact plugin is disabled (set enabled=true in settings to re-enable)' }
+  }
   const backend = await resolveCompaction(ctx, agent, mode)
   ctx.logger.debug(`[force-compact] ${session.id}: /force-compact handler entered (backend ${backend ? backend.kind : 'UNAVAILABLE'})`)
 

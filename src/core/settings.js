@@ -147,6 +147,7 @@ export const MIN_TOKEN_SCALES = Object.freeze({
 })
 
 export const DEFAULTS = Object.freeze({
+  enabled: true,
   disableThinking: true,
   autoThresholdTokens: 32000,
   autoThresholdPercent: 0,
@@ -239,6 +240,7 @@ async function __readSettingsBody(ctx) {
     const v = asPositiveInt(field, DEFAULTS[field])
     return Number.isFinite(v) && v < floor ? floor : v
   }
+  const enabled = asBool('enabled', DEFAULTS.enabled)
   const disableThinking = asBool('disableThinking', DEFAULTS.disableThinking)
   const autoThresholdTokens = asScaled('autoThresholdTokens', MIN_TOKEN_SCALES.autoThresholdTokens)
   const rawPercent = Number.isFinite(section.autoThresholdPercent) ? section.autoThresholdPercent : DEFAULTS.autoThresholdPercent
@@ -258,6 +260,7 @@ async function __readSettingsBody(ctx) {
     : DEFAULTS.builtinEnabled)
   const maxSummaryTokens = asScaled('maxSummaryTokens', MIN_TOKEN_SCALES.maxSummaryTokens)
   return {
+    enabled,
     disableThinking,
     autoThresholdTokens,
     autoThresholdPercent,
@@ -411,6 +414,7 @@ export async function buildSchema() {
     const z = await resolveZ()
     if (z === undefined) return null
     const schema = z.object({
+      enabled: z.boolean().default(DEFAULTS.enabled),
       disableThinking: z.boolean().default(DEFAULTS.disableThinking),
       // Minimal chain: `.step()` and `.min()` were ADDED this pass and are
       // exactly what broke the host's vendored schemastery surface (the

@@ -72,6 +72,11 @@ async function __handleAgentStatusBody(ctx, payload, mode) {
   const session = (agent && typeof agent === 'object') ? agent.session : undefined
   const sid = (session && typeof session.id === 'string') ? session.id : '?'
   const settings = (await readSettings(ctx)) ?? DEFAULTS
+  if (settings.enabled === false) {
+    ctx.logger.debug(`[force-compact] ${sid}: plugin disabled - idle transition ignored`)
+    await publishEnd(ctx)
+    return
+  }
   if (settings.turnEndForceCompactionEnabled !== true) {
     // Visible so a tester who flipped the setting OFF can confirm the guard is
     // what suppressed the idle compaction (not a missing listener).
