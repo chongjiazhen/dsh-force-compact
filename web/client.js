@@ -55,6 +55,10 @@ window.__ModuleLoader__.load({
       builtinEnabledHint: "官方 compaction 服务不可达时（例如标准 preset 将其隔离进 isolate 组），启用插件自研的内置压缩引擎作为后备。默认开启。设为 false 严格只走官方。",
       maxSummaryTokens: "最大摘要数（tokens）",
       maxSummaryTokensHint: "插件自身摘要 LLM 调用的 maxTokens 上限（默认 1024，1024–200000），防止摘要长度失控；收缩门禁另行保证提交的摘要比被遮蔽区间小。最小 1024，若填低于此值会自动重置为 1024。",
+      enabled: "启用强制压缩",
+      enabledHint: "总开关。关闭后插件不再触发任何自动/回合末/命令压缩，仅保留设置面板。",
+      autoThresholdPercent: "自动压缩阈值（上下文窗口 %）",
+      autoThresholdPercentHint: "大于 0 时以当前模型 contextWindow 的百分比计算阈值，覆盖上方的绝对 token 值；0 表示不启用（沿用绝对值）。范围 0 到 100。",
       unavailable: "设置不可用",
       loading: "加载中…",
       notWritable: "（当前为只读/内存模式，改动仅本进程生效）",
@@ -85,6 +89,10 @@ window.__ModuleLoader__.load({
       builtinEnabledHint: "Fallback to this plugin's own self-contained engine when the official compaction service is unreachable (e.g. standard-preset realm isolation). Defaults on. Set false to strictly use only the official backend.",
       maxSummaryTokens: "Max summary size (tokens)",
       maxSummaryTokensHint: "maxTokens ceiling on the plugin's own summarization LLM call (default 1024, range 1024–200000). Prevents runaway summaries; the shrink gate separately guarantees the committed summary is smaller than the span it replaces. Minimum 1024 — values below are clamped back to 1024.",
+      enabled: "Enable force compaction",
+      enabledHint: "Master switch. When off, the plugin triggers no auto, turn-end, or command compaction; only this panel remains.",
+      autoThresholdPercent: "Auto-compaction threshold (% of context window)",
+      autoThresholdPercentHint: "When above 0, the threshold is this percentage of the active model's contextWindow and overrides the absolute token value above. 0 disables it (the absolute value applies). Range 0-100.",
       unavailable: "Settings unavailable",
       loading: "Loading…",
       notWritable: "(read-only / memory mode; changes are process-local)",
@@ -485,6 +493,9 @@ window.__ModuleLoader__.load({
       // 表单提交时再做一次运行时 clamp（防键盘直接键入 sub-floor 值）。
       const thOpt = { step: 1000, min: 32000, max: 1000000 };
       const [thBuf, thHandlers] = useDraftNumberClamped("autoThresholdTokens", valOrUndef("autoThresholdTokens"), thOpt, update, 32000);
+      // autoThresholdPercent: 0 = off, 1-100 = fraction of the model's contextWindow.
+      const pcOpt = { step: 1, min: 0, max: 100 };
+      const [pcBuf, pcHandlers] = useDraftNumberClamped("autoThresholdPercent", valOrUndef("autoThresholdPercent"), pcOpt, update, 0);
       // retainLatestTokens：整 token 值（step 512），范围 8000–1_000_000。
       const rtOpt = { step: 512, min: 8000, max: 1000000 };
       const [rtBuf, rtHandlers] = useDraftNumberClamped("retainLatestTokens", valOrUndef("retainLatestTokens"), rtOpt, update, 8000);
@@ -591,8 +602,10 @@ window.__ModuleLoader__.load({
           h("h2", { style: titleStyle }, t("nav")),
           h("p", { style: introStyle }, t("intro")),
           h("div", null,
+            booleanRow("enabled", "enabled", "enabledHint", false),
             booleanRow("disableThinking", "disableThinking", "disableThinkingHint", false),
             numberRow("autoThresholdTokens", "autoThresholdTokens", "autoThresholdTokensHint", thBuf, thHandlers, thOpt, false),
+            numberRow("autoThresholdPercent", "autoThresholdPercent", "autoThresholdPercentHint", pcBuf, pcHandlers, pcOpt, false),
             numberRow("retainLatestTokens", "retainLatestTokens", "retainLatestTokensHint", rtBuf, rtHandlers, rtOpt, false),
             booleanRow("turnEndForceCompactionEnabled", "turnEndForceCompaction", "turnEndForceCompactionHint", false),
             booleanRow("debug", "debug", "debugHint", false),
