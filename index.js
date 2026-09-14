@@ -169,7 +169,9 @@ const __applyInner = (ctx) => {
         // cannot spin forever. After the cap we stop scheduling and leave the
         // guarded listeners (agent/* events) as the final safety net.
         if (attempts >= RETRY_MAX_ATTEMPTS) {
-          settingsState.settled = true
+          // Timer retries exhausted - stop the timer loop but leave
+          // settled=false so guarded listeners (agent/* events) can still
+          // attempt registration when the settings service eventually mounts.
           return
         }
         if (settingsState.settled) return
